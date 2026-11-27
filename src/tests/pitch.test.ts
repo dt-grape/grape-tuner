@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { centsBetween, midiToFrequency } from '../features/tuner/music'
-import { BUFFER_SIZE, createPitchReader, PitchTracker, quietSignal, type Signal } from '../features/tuner/pitch'
+import { BUFFER_SIZE, createPitchAnalyzer, createPitchReader, PitchTracker, quietSignal, type Signal } from '../features/tuner/pitch'
 
 const read = createPitchReader()
-function waveform(sampleRate: number, frequency: number, harmonics: number[], noise = 0) {
+function waveform(sampleRate: number, frequency: number, harmonics: number[], noise = 0,
+  length = BUFFER_SIZE, envelope = (_time: number) => 1) {
   let random = 8675309
-  return Float32Array.from({ length: BUFFER_SIZE }, (_, index) => {
+  return Float32Array.from({ length }, (_, index) => {
     const time = index / sampleRate
     random = (Math.imul(random, 1664525) + 1013904223) >>> 0
-    return harmonics.reduce((sum, strength, harmonic) => sum + strength * Math.sin(2 * Math.PI * frequency * time * (harmonic + 1)), 0) +
-      noise * (2 * random / 0x100000000 - 1)
+    const tone = harmonics.reduce((sum, strength, harmonic) =>
+      sum + strength * Math.sin(2 * Math.PI * frequency * time * (harmonic + 1)), 0)
+    return tone * envelope(time) + noise * (2 * random / 0x100000000 - 1)
   })
 }
 
@@ -67,7 +69,54 @@ describe('pitch tracking', () => {
     const track = new PitchTracker()
     track.update(pitch(82), 0)
     track.update(pitch(82), 45)
-    expect(track.update(quietSignal, 100).frequency).toBe(82)
-    expect(track.update(quietSignal, 210)).toEqual(quietSignal)
+    expect(track.update(quietSignal, 225)).toEqual({ ...quietSignal, frequency: 82 })
+    expect(track.update(quietSignal, 300)).toEqual(quietSignal)
+  })
+})
+
+describe('sustained string detection', () => {
+  const sampleRate = 48000
+
+  it.each([82.407, 329.628])('measures a single decaying %.3f Hz pluck for at least 1.4 seconds', (frequency) => {
+    const pitch = createPitchAnalyzer()
+    const samples = waveform(sampleRate, frequency, [0.018, 0.012, 0.007], 0.00021, sampleRate * 2.4, (time) => {
+      const age = time - 0.25
+      return age >= 0 && age < 1.6 ? Math.exp(-age / 0.4) : 0
+    })
+
+    function measure(time: number) {
+      const end = Math.round(time * sampleRate / 1000)
+      return pitch.analyze(samples.subarray(end - BUFFER_SIZE, end), sampleRate, 50, time)
+    }
+
+    expect(measure(210)).toEqual(quietSignal)
+    for (let time = 255; time <= 1650; time += 45) {
+      const reading = measure(time)
+      if (time < 435) continue
+      expect(reading.state, `${time} ms`).toBe('pitch')
+      expect(Math.abs(centsBetween(reading.frequency!, frequency)), `${time} ms`).toBeLessThan(3)
+    }
+    for (let time = 1695; time < 2300; time += 45) measure(time)
+    expect(measure(2300)).toEqual(quietSignal)
+  })
+
+  it('rejects stray weak harmonics and noise while allowing the next strong pluck', () => {
+    const pitch = createPitchAnalyzer()
+    const weakHarmonic = waveform(sampleRate, 220, [0.0015])
+    const aString = waveform(sampleRate, 110, [0.03])
+    const dString = waveform(sampleRate, 146.83, [0.03])
+
+    expect(pitch.analyze(weakHarmonic, sampleRate, 50, 0).frequency).toBeNull()
+    pitch.analyze(aString, sampleRate, 50, 45)
+    expect(pitch.analyze(aString, sampleRate, 50, 90).state).toBe('pitch')
+    expect(pitch.analyze(weakHarmonic, sampleRate, 50, 135).state).toBe('weak')
+    const noise = waveform(sampleRate, 110, [], 0.0018)
+    expect(pitch.analyze(noise, sampleRate, 50, 180).state).toBe('weak')
+    expect(pitch.analyze(dString, sampleRate, 50, 225).state).toBe('tracking')
+    expect(pitch.analyze(dString, sampleRate, 50, 270).frequency).toBeCloseTo(146.83, 2)
+
+    pitch.reset()
+    const quietD = waveform(sampleRate, 146.83, [0.0015])
+    expect(pitch.analyze(quietD, sampleRate, 50, 315).frequency).toBeNull()
   })
 })

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { BUFFER_SIZE, createPitchReader, PitchTracker, quietSignal, type Signal } from './pitch'
+import { BUFFER_SIZE, createPitchAnalyzer, quietSignal, type Signal } from './pitch'
 
 export type MicError = 'denied' | 'missing' | 'busy' | 'unsupported' | 'insecure' | 'interrupted'
 export type MicStatus = 'off' | 'requesting' | 'on' | 'paused'
@@ -86,8 +86,7 @@ export function useMicrophone(sensitivity: number) {
       source.connect(highPass).connect(lowPass).connect(analyser)
 
       const samples = new Float32Array(analyser.fftSize)
-      const readPitch = createPitchReader(samples.length)
-      let tracker = new PitchTracker()
+      const pitch = createPitchAnalyzer(samples.length)
       let last = -Infinity
 
       function frame(time: number) {
@@ -96,7 +95,7 @@ export function useMicrophone(sensitivity: number) {
         if (document.hidden || context.state !== 'running' || time - last < 42) return
         last = time
         analyser.getFloatTimeDomainData(samples)
-        setSignal(tracker.update(readPitch(samples, context.sampleRate, sensitivityRef.current), time))
+        setSignal(pitch.analyze(samples, context.sampleRate, sensitivityRef.current, time))
       }
 
       function syncState() {
@@ -104,7 +103,7 @@ export function useMicrophone(sensitivity: number) {
         const paused = document.hidden || context.state !== 'running' || stream.getAudioTracks().every((track) => track.muted)
         setStatus(paused ? 'paused' : 'on')
         if (paused) {
-          tracker = new PitchTracker()
+          pitch.reset()
           setSignal(quietSignal)
           if (session.frame !== undefined) cancelAnimationFrame(session.frame)
           session.frame = undefined
