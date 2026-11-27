@@ -56,7 +56,8 @@ export function App() {
   useEffect(() => {
     const root = document.documentElement
     root.dataset.theme = dark ? 'dark' : 'light'
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#13141c' : '#f1f0f7')
+    const color = getComputedStyle(root).getPropertyValue('--bg').trim()
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', color)
   }, [dark])
 
   useEffect(() => { document.documentElement.lang = preferences.language }, [preferences.language])
@@ -72,7 +73,7 @@ export function App() {
         <header className="app-header">
           <div className="brand"><span className="brand-mark"><AudioLines size={23} strokeWidth={2.25} /></span><span>grape<span className="brand-accent">tuner</span></span></div>
           <div className="header-controls">
-            <div className="mic-status" data-status={mic.status} aria-live="polite">
+            <div className="mic-status" data-status={mic.status} title={micState} aria-live="polite">
               {mic.status === 'on' ? <Mic size={15} /> : <MicOff size={15} />}
               <span>{micState}</span>
             </div>
